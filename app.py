@@ -2,9 +2,9 @@
 """
 Aplicación Streamlit para el Balanceo de Líneas de Producción.
 
-Versión 5.0: Se reestructura la interfaz principal en pestañas.
-La funcionalidad del optimizador se mueve a la pestaña "Optimizador" y
-la información del autor a una nueva pestaña "Acerca de".
+Versión 5.1: Se reestructura la pestaña "Acerca de" para una mejor
+visualización de la información del autor, usando un diseño de una
+sola columna y contenido enriquecido.
 """
 import streamlit as st
 import datetime
@@ -288,25 +288,34 @@ with tab_optimizador:
 
 # --- Pestaña de "Acerca de" ---
 with tab_acerca_de:
-    st.header("Autor del Software")
-    st.write("---")
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        # Placeholder for an image, you can replace the URL with a direct link to a photo
-        st.image("https://placehold.co/200x200/2B3137/FFFFFF?text=J.S.", width=200, caption="Joseph Javier Sánchez Acuña")
-    with col2:
-        st.subheader("Joseph Javier Sánchez Acuña")
-        st.write("**Ingeniero Industrial, Experto en Inteligencia Artificial y Desarrollo de Software.**")
+    with st.container(border=True):
+        st.header("Sobre el Autor y la Aplicación")
+        
+        # Centered Image
+        _, center_col, _ = st.columns([1, 1, 1])
+        with center_col:
+            st.image("https://placehold.co/250x250/2B3137/FFFFFF?text=J.S.", width=250, caption="Joseph Javier Sánchez Acuña")
+
+        st.title("Joseph Javier Sánchez Acuña")
+        st.subheader("_Ingeniero Industrial, Experto en Inteligencia Artificial y Desarrollo de Software._")
+        
+        st.markdown("---")
+        
+        st.subheader("Acerca de esta Herramienta")
         st.markdown("""
-        Esta aplicación fue desarrollada como una herramienta avanzada para el análisis y balanceo de líneas de producción.
-        Combina principios de ingeniería industrial con desarrollo de software moderno para proporcionar una solución
-        intuitiva y potente.
+        Esta aplicación fue concebida como una solución integral y moderna para el **análisis y balanceo de líneas de producción**. El objetivo es fusionar los principios fundamentales de la ingeniería industrial con las capacidades del desarrollo de software actual para ofrecer una herramienta que sea a la vez potente, intuitiva y accesible.
+
+        Desde el cálculo de la ruta crítica (CPM) hasta la asignación inteligente de personal y la generación de reportes en PDF, cada funcionalidad ha sido diseñada para proporcionar a estudiantes, ingenieros y gerentes de producción los datos necesarios para tomar decisiones informadas y optimizar sus procesos.
         """)
-    st.write("---")
-    st.subheader("Contacto y Enlaces")
-    st.write(
-        "🔗 [**LinkedIn**](https://www.linkedin.com/in/joseph-javier-sánchez-acuña-150410275) &nbsp;&nbsp; | &nbsp;&nbsp;"
-        "📂 [**GitHub**](https://github.com/GIUSEPPESAN21) &nbsp;&nbsp; | &nbsp;&nbsp;"
-        "📧 **joseph.sanchez@uniminuto.edu.co**"
-    )
+
+        st.markdown("---")
+
+        st.subheader("Contacto y Enlaces Profesionales")
+        st.markdown(
+            """
+            - 🔗 **LinkedIn:** [joseph-javier-sánchez-acuña](https://www.linkedin.com/in/joseph-javier-sánchez-acuña-150410275)
+            - 📂 **GitHub:** [GIUSEPPESAN21](https://github.com/GIUSEPPESAN21)
+            - 📧 **Email:** [joseph.sanchez@uniminuto.edu.co](mailto:joseph.sanchez@uniminuto.edu.co)
+            """
+        )
 
