@@ -16,23 +16,22 @@ DESTINATION_WHATSAPP_NUMBER = "+57..."
 """
 import streamlit as st
 import datetime
-import os
 import matplotlib
 matplotlib.use('Agg') # Backend para entornos sin GUI
 import matplotlib.pyplot as plt
-import numpy as np
 from io import BytesIO
-import re
 
-# --- Importaciones para PDF con ReportLab ---
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib import colors
+# --- Importación de Twilio ---
+# Se envuelve en un try-except para que la app funcione incluso si twilio no está instalado localmente.
+try:
+    from twilio.rest import Client
+    IS_TWILIO_AVAILABLE = True
+except ImportError:
+    IS_TWILIO_AVAILABLE = False
+
 
 # --- Lógica de Negocio (Clases Estacion y LineaProduccion) ---
-# (Estas clases se han adaptado ligeramente para un mejor logging y manejo de errores en Streamlit)
+# (Se mantienen las clases originales sin cambios en su lógica principal)
 
 class Estacion:
     """
@@ -274,7 +273,6 @@ def generar_reporte_txt(results):
     linea = results['linea_obj']
     analisis_texto = linea.generar_texto_analisis_resultados().replace("`", "").replace("*", "").replace("#", "")
     
-    # Recrear tabla CPM para TXT
     cpm_header = f"{'Estación':<20} | {'Tiempo':>7} | {'ES':>7} | {'EF':>7} | {'LS':>7} | {'LF':>7} | {'Holgura':>7} | {'Crítica':>8}\n"
     cpm_header += "-" * len(cpm_header) + "\n"
     cpm_rows = ""
@@ -289,79 +287,79 @@ def generar_reporte_txt(results):
     
     return contenido_txt.encode('utf-8')
 
-# (Las funciones de PDF y Twilio se omiten por brevedad en este ejemplo,
-# pero su lógica se puede integrar de manera similar si es necesario.)
-USER_TWILIO_ACCOUNT_SID = "AC54b60c4a414f9e4ce112680d5b453578"
-USER_TWILIO_AUTH_TOKEN = "455508d7d3c49b4046e97ac934e606f1"
-USER_TWILIO_WHATSAPP_FROM_NUMBER = "+14155238886" # Número de Sandbox de Twilio
-USER_DESTINATION_WHATSAPP_NUMBER = "+573222074527"
+# --- Lógica de Twilio con Streamlit Secrets ---
+LOW_EFFICIENCY_THRESHOLD = 75 # Umbral para enviar alerta
 
-# Usar las credenciales proporcionadas por el usuario directamente
-# Si las variables de entorno existen, tendrán precedencia.
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", USER_TWILIO_ACCOUNT_SID)
-TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", USER_TWILIO_AUTH_TOKEN)
-TWILIO_WHATSAPP_FROM_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", USER_TWILIO_WHATSAPP_FROM_NUMBER) 
-DESTINATION_WHATSAPP_NUMBER = os.environ.get("DESTINATION_WHATSAPP_NUMBER", USER_DESTINATION_WHATSAPP_NUMBER)
+def inicializar_twilio_client():
+    """
+    Inicializa el cliente de Twilio usando las credenciales de st.secrets.
+    Devuelve el cliente si las credenciales son válidas, de lo contrario devuelve None.
+    """
+    if not IS_TWILIO_AVAILABLE:
+        return None
 
-twilio_client = None
-# Verificación de las credenciales
-if TWILIO_ACCOUNT_SID and not TWILIO_ACCOUNT_SID.startswith("ACxx") and \
-   TWILIO_AUTH_TOKEN and len(TWILIO_AUTH_TOKEN) == 32 and \
-   TWILIO_WHATSAPP_FROM_NUMBER and DESTINATION_WHATSAPP_NUMBER:
-    print(f"INFO: Intentando inicializar Twilio Client con SID: {TWILIO_ACCOUNT_SID[:5]}... y Token: {'*'*(len(TWILIO_AUTH_TOKEN)-4) + TWILIO_AUTH_TOKEN[-4:]}")
     try:
-        twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        print("INFO: Cliente de Twilio inicializado correctamente.")
+        # Verifica que todas las claves secretas necesarias existan
+        required_secrets = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_WHATSAPP_FROM_NUMBER", "DESTINATION_WHATSAPP_NUMBER"]
+        if all(hasattr(st, 'secrets') and key in st.secrets for key in required_secrets):
+            account_sid = st.secrets["TWILIO_ACCOUNT_SID"]
+            auth_token = st.secrets["TWILIO_AUTH_TOKEN"]
+            
+            if account_sid.startswith("AC") and len(auth_token) == 32:
+                client = Client(account_sid, auth_token)
+                st.session_state.twilio_configured = True
+                return client
+            else:
+                # Muestra una advertencia si el formato es incorrecto
+                if 'twilio_warning_shown' not in st.session_state:
+                    st.warning("Credenciales de Twilio parecen tener un formato incorrecto. Las notificaciones están desactivadas.", icon="⚠️")
+                    st.session_state.twilio_warning_shown = True # Evita mostrarlo en cada recarga
+                st.session_state.twilio_configured = False
+                return None
+        else:
+            st.session_state.twilio_configured = False
+            return None
     except Exception as e:
-        print(f"ERROR AL INICIALIZAR TWILIO CLIENT: {e}. Las alertas de WhatsApp no funcionarán.")
-        twilio_client = None 
-else:
-    print("ADVERTENCIA: Credenciales o números de Twilio no configurados correctamente o con formato inválido. Las alertas de WhatsApp no funcionarán.")
-    print(f"  TWILIO_ACCOUNT_SID: {'OK' if TWILIO_ACCOUNT_SID and not TWILIO_ACCOUNT_SID.startswith('ACxx') else 'PROBLEMA - Valor: ' + str(TWILIO_ACCOUNT_SID)}")
-    print(f"  TWILIO_AUTH_TOKEN: {'OK' if TWILIO_AUTH_TOKEN and len(TWILIO_AUTH_TOKEN) == 32 else 'PROBLEMA - Longitud: ' + str(len(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else 0)}")
-    print(f"  TWILIO_WHATSAPP_FROM_NUMBER: {'OK' if TWILIO_WHATSAPP_FROM_NUMBER else 'PROBLEMA - Valor: ' + str(TWILIO_WHATSAPP_FROM_NUMBER)}")
-    print(f"  DESTINATION_WHATSAPP_NUMBER: {'OK' if DESTINATION_WHATSAPP_NUMBER else 'PROBLEMA - Valor: ' + str(DESTINATION_WHATSAPP_NUMBER)}")
-    twilio_client = None
-
-
-LOW_EFFICIENCY_THRESHOLD = 60 
+        if 'twilio_error_shown' not in st.session_state:
+            st.error(f"Error al inicializar el cliente de Twilio: {e}")
+            st.session_state.twilio_error_shown = True
+        st.session_state.twilio_configured = False
+        return None
 
 def enviar_alerta_balanceo_whatsapp(mensaje):
-    if not twilio_client:
-        print("INFO ALERTA WHATSAPP: Cliente de Twilio no disponible. Mensaje no enviado.")
-        return False
-    if not TWILIO_WHATSAPP_FROM_NUMBER or not DESTINATION_WHATSAPP_NUMBER:
-        print("INFO ALERTA WHATSAPP: Números de WhatsApp (origen o destino) no configurados. Mensaje no enviado.")
+    """
+    Envía una alerta por WhatsApp si el cliente de Twilio está configurado.
+    """
+    if not st.session_state.get('twilio_configured', False) or st.session_state.twilio_client is None:
         return False
     
-    print(f"INFO ALERTA WHATSAPP: Intentando enviar mensaje desde {TWILIO_WHATSAPP_FROM_NUMBER} hacia {DESTINATION_WHATSAPP_NUMBER}")
     try:
-        message_instance = twilio_client.messages.create(
-            from_=f'whatsapp:{TWILIO_WHATSAPP_FROM_NUMBER}',
+        from_number = st.secrets["TWILIO_WHATSAPP_FROM_NUMBER"]
+        to_number = st.secrets["DESTINATION_WHATSAPP_NUMBER"]
+
+        message_instance = st.session_state.twilio_client.messages.create(
+            from_=f'whatsapp:{from_number}',
             body=mensaje,
-            to=f'whatsapp:{DESTINATION_WHATSAPP_NUMBER}'
+            to=f'whatsapp:{to_number}'
         )
-        print(f"INFO ALERTA WHATSAPP: Mensaje Twilio SID: {message_instance.sid}, Estado: {message_instance.status}")
-        if message_instance.error_code:
-            print(f"ERROR ALERTA WHATSAPP (POST-ENVÍO): Código: {message_instance.error_code}, Mensaje: {message_instance.error_message}")
-            return False
+        st.toast(f"¡Alerta de WhatsApp enviada a {to_number}!", icon="✅")
         return True
     except Exception as e:
-        print(f"ERROR CRÍTICO ALERTA WHATSAPP: Excepción al enviar: {e}")
-        if hasattr(e, 'status'): print(f"  Twilio Exception Status: {e.status}")
-        if hasattr(e, 'code'): print(f"  Twilio Exception Code: {e.code}")
-        if hasattr(e, 'message'): print(f"  Twilio Exception Message: {e.message}")
-        if hasattr(e, 'more_info'): print(f"  Twilio Exception More Info: {e.more_info}")
+        st.error(f"Error crítico al enviar la alerta de WhatsApp: {e}")
         return False
 
 # --- Interfaz de Streamlit ---
 
 st.set_page_config(page_title="Optimización de Líneas", layout="wide", page_icon="⚙️")
 
+# --- Inicialización del Cliente de Twilio ---
+if 'twilio_client' not in st.session_state:
+    st.session_state.twilio_client = inicializar_twilio_client()
+
 st.title("⚙️ Optimización de Líneas de Producción")
 st.markdown("Herramienta avanzada para el análisis y balanceo eficiente de sus procesos productivos.")
 
-# --- Inicialización del Estado ---
+# --- Inicialización del Estado de la Sesión ---
 if 'estaciones' not in st.session_state:
     st.session_state.estaciones = [
         {'nombre': 'Corte', 'tiempo': 2.0, 'predecesora': ''},
@@ -391,26 +389,17 @@ with st.sidebar:
         st.session_state.estaciones = st.session_state.estaciones[:num_estaciones]
     
     # Crear inputs para cada estación
-    nombres_posibles_predecesoras = [""] + [st.session_state.estaciones[i]['nombre'] for i in range(num_estaciones) if st.session_state.estaciones[i]['nombre']]
-
     for i in range(num_estaciones):
         with st.expander(f"Estación {i+1}: {st.session_state.estaciones[i]['nombre'] or 'Nueva'}", expanded=True):
             st.session_state.estaciones[i]['nombre'] = st.text_input(f"Nombre Estación {i+1}", value=st.session_state.estaciones[i]['nombre'], key=f"nombre_{i}")
             st.session_state.estaciones[i]['tiempo'] = st.number_input(f"Tiempo (min) {i+1}", min_value=0.01, value=st.session_state.estaciones[i]['tiempo'], key=f"tiempo_{i}")
             
-            # Predecesora con Selectbox
-            # Actualizar lista de predecesoras para el selectbox actual
             predecesoras_disponibles = [""] + [est['nombre'] for j, est in enumerate(st.session_state.estaciones) if i != j and est['nombre']]
-            
-            # Si la predecesora guardada no está en la lista, añadirla temporalmente
             current_pred = st.session_state.estaciones[i]['predecesora']
-            if current_pred and current_pred not in predecesoras_disponibles:
-                predecesoras_disponibles.append(current_pred)
-
             try:
                 idx = predecesoras_disponibles.index(current_pred)
             except ValueError:
-                idx = 0 # Default a "" si hay algún problema
+                idx = 0
             
             st.session_state.estaciones[i]['predecesora'] = st.selectbox(f"Predecesora {i+1}", options=predecesoras_disponibles, index=idx, key=f"pred_{i}")
 
@@ -418,7 +407,7 @@ with st.sidebar:
 if st.sidebar.button("Calcular Balanceo", type="primary", use_container_width=True):
     with st.spinner("Realizando cálculos..."):
         try:
-            # Validación de datos de entrada
+            # Validación de datos
             nombres_unicos = {est['nombre'].lower() for est in st.session_state.estaciones if est['nombre']}
             if len(nombres_unicos) != len([est['nombre'] for est in st.session_state.estaciones if est['nombre']]):
                 st.error("Error: Existen nombres de estación duplicados. Por favor, corríjalos.")
@@ -430,6 +419,16 @@ if st.sidebar.button("Calcular Balanceo", type="primary", use_container_width=Tr
                 linea.calcular_metricas_produccion()
                 linea.asignar_empleados()
                 
+                # Envío de alerta si la eficiencia es baja y Twilio está configurado
+                if linea.eficiencia_linea < LOW_EFFICIENCY_THRESHOLD:
+                    mensaje_alerta = (
+                        f"¡Alerta de Producción! 📉\n"
+                        f"La eficiencia de la línea ha caído a *{linea.eficiencia_linea:.2f}%*, "
+                        f"por debajo del umbral de {LOW_EFFICIENCY_THRESHOLD}%.\n\n"
+                        f"Cuello de botella: Estación '{linea.cuello_botella_info.get('nombre', 'N/A')}'."
+                    )
+                    enviar_alerta_balanceo_whatsapp(mensaje_alerta)
+
                 fig_pie, fig_bar = generar_graficos(linea)
 
                 st.session_state.results = {
@@ -450,7 +449,6 @@ if st.session_state.results:
     
     st.header("3. Acciones y Resultados")
     
-    # Botones de descarga
     col1, col2 = st.columns(2)
     with col1:
         txt_data = generar_reporte_txt(st.session_state.results)
@@ -462,9 +460,11 @@ if st.session_state.results:
             use_container_width=True
         )
     with col2:
-        st.info("La exportación a PDF está en desarrollo.", icon="⏳")
+        if st.session_state.get('twilio_configured', False):
+            st.success("Notificaciones por WhatsApp activas.", icon="🔔")
+        else:
+            st.info("Notificaciones por WhatsApp inactivas. Configure sus 'secrets' para habilitarlas.", icon="ℹ️")
 
-    # Pestañas de resultados
     tab_analisis, tab_cpm, tab_graficos = st.tabs(["📊 Análisis y Métricas", "📈 Detalle CPM", "🎨 Gráficos"])
 
     with tab_analisis:
@@ -477,10 +477,8 @@ if st.session_state.results:
             cpm_data.append({
                 "Estación": est.nombre,
                 "Tiempo": est.tiempo,
-                "ES": est.es,
-                "EF": est.ef,
-                "LS": est.ls,
-                "LF": est.lf,
+                "ES": est.es, "EF": est.ef,
+                "LS": est.ls, "LF": est.lf,
                 "Holgura": est.holgura,
                 "Crítica": "Sí" if est.es_critica else "No"
             })
@@ -507,4 +505,3 @@ if st.session_state.results:
             st.warning("No se pudieron generar gráficos con los datos proporcionados.")
 else:
     st.info("Ingrese los parámetros en la barra lateral y presione 'Calcular Balanceo' para ver los resultados.")
-
