@@ -291,7 +291,68 @@ def generar_reporte_txt(results):
 
 # (Las funciones de PDF y Twilio se omiten por brevedad en este ejemplo,
 # pero su lógica se puede integrar de manera similar si es necesario.)
+USER_TWILIO_ACCOUNT_SID = "AC54b60c4a414f9e4ce112680d5b453578"
+USER_TWILIO_AUTH_TOKEN = "455508d7d3c49b4046e97ac934e606f1"
+USER_TWILIO_WHATSAPP_FROM_NUMBER = "+14155238886" # Número de Sandbox de Twilio
+USER_DESTINATION_WHATSAPP_NUMBER = "+573222074527"
 
+# Usar las credenciales proporcionadas por el usuario directamente
+# Si las variables de entorno existen, tendrán precedencia.
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", USER_TWILIO_ACCOUNT_SID)
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", USER_TWILIO_AUTH_TOKEN)
+TWILIO_WHATSAPP_FROM_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", USER_TWILIO_WHATSAPP_FROM_NUMBER) 
+DESTINATION_WHATSAPP_NUMBER = os.environ.get("DESTINATION_WHATSAPP_NUMBER", USER_DESTINATION_WHATSAPP_NUMBER)
+
+twilio_client = None
+# Verificación de las credenciales
+if TWILIO_ACCOUNT_SID and not TWILIO_ACCOUNT_SID.startswith("ACxx") and \
+   TWILIO_AUTH_TOKEN and len(TWILIO_AUTH_TOKEN) == 32 and \
+   TWILIO_WHATSAPP_FROM_NUMBER and DESTINATION_WHATSAPP_NUMBER:
+    print(f"INFO: Intentando inicializar Twilio Client con SID: {TWILIO_ACCOUNT_SID[:5]}... y Token: {'*'*(len(TWILIO_AUTH_TOKEN)-4) + TWILIO_AUTH_TOKEN[-4:]}")
+    try:
+        twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        print("INFO: Cliente de Twilio inicializado correctamente.")
+    except Exception as e:
+        print(f"ERROR AL INICIALIZAR TWILIO CLIENT: {e}. Las alertas de WhatsApp no funcionarán.")
+        twilio_client = None 
+else:
+    print("ADVERTENCIA: Credenciales o números de Twilio no configurados correctamente o con formato inválido. Las alertas de WhatsApp no funcionarán.")
+    print(f"  TWILIO_ACCOUNT_SID: {'OK' if TWILIO_ACCOUNT_SID and not TWILIO_ACCOUNT_SID.startswith('ACxx') else 'PROBLEMA - Valor: ' + str(TWILIO_ACCOUNT_SID)}")
+    print(f"  TWILIO_AUTH_TOKEN: {'OK' if TWILIO_AUTH_TOKEN and len(TWILIO_AUTH_TOKEN) == 32 else 'PROBLEMA - Longitud: ' + str(len(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else 0)}")
+    print(f"  TWILIO_WHATSAPP_FROM_NUMBER: {'OK' if TWILIO_WHATSAPP_FROM_NUMBER else 'PROBLEMA - Valor: ' + str(TWILIO_WHATSAPP_FROM_NUMBER)}")
+    print(f"  DESTINATION_WHATSAPP_NUMBER: {'OK' if DESTINATION_WHATSAPP_NUMBER else 'PROBLEMA - Valor: ' + str(DESTINATION_WHATSAPP_NUMBER)}")
+    twilio_client = None
+
+
+LOW_EFFICIENCY_THRESHOLD = 60 
+
+def enviar_alerta_balanceo_whatsapp(mensaje):
+    if not twilio_client:
+        print("INFO ALERTA WHATSAPP: Cliente de Twilio no disponible. Mensaje no enviado.")
+        return False
+    if not TWILIO_WHATSAPP_FROM_NUMBER or not DESTINATION_WHATSAPP_NUMBER:
+        print("INFO ALERTA WHATSAPP: Números de WhatsApp (origen o destino) no configurados. Mensaje no enviado.")
+        return False
+    
+    print(f"INFO ALERTA WHATSAPP: Intentando enviar mensaje desde {TWILIO_WHATSAPP_FROM_NUMBER} hacia {DESTINATION_WHATSAPP_NUMBER}")
+    try:
+        message_instance = twilio_client.messages.create(
+            from_=f'whatsapp:{TWILIO_WHATSAPP_FROM_NUMBER}',
+            body=mensaje,
+            to=f'whatsapp:{DESTINATION_WHATSAPP_NUMBER}'
+        )
+        print(f"INFO ALERTA WHATSAPP: Mensaje Twilio SID: {message_instance.sid}, Estado: {message_instance.status}")
+        if message_instance.error_code:
+            print(f"ERROR ALERTA WHATSAPP (POST-ENVÍO): Código: {message_instance.error_code}, Mensaje: {message_instance.error_message}")
+            return False
+        return True
+    except Exception as e:
+        print(f"ERROR CRÍTICO ALERTA WHATSAPP: Excepción al enviar: {e}")
+        if hasattr(e, 'status'): print(f"  Twilio Exception Status: {e.status}")
+        if hasattr(e, 'code'): print(f"  Twilio Exception Code: {e.code}")
+        if hasattr(e, 'message'): print(f"  Twilio Exception Message: {e.message}")
+        if hasattr(e, 'more_info'): print(f"  Twilio Exception More Info: {e.more_info}")
+        return False
 
 # --- Interfaz de Streamlit ---
 
@@ -446,3 +507,4 @@ if st.session_state.results:
             st.warning("No se pudieron generar gráficos con los datos proporcionados.")
 else:
     st.info("Ingrese los parámetros en la barra lateral y presione 'Calcular Balanceo' para ver los resultados.")
+
