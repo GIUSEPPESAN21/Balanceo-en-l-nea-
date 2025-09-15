@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 
 # --- Importación de Twilio ---
-# Se envuelve en un try-except para que la app funcione incluso si twilio no está instalado localmente.
+# Se envuelve en un try-except para que la app funcione incluso si twilio no está instalado.
 try:
     from twilio.rest import Client
     IS_TWILIO_AVAILABLE = True
@@ -36,8 +36,6 @@ except ImportError:
 class Estacion:
     """
     Representa una estación de trabajo en la línea de producción.
-    Almacena información sobre su tiempo de proceso y relaciones de precedencia.
-    También guarda los resultados del cálculo CPM (ES, EF, LS, LF, Holgura).
     """
     def __init__(self, nombre, tiempo, predecesora_nombre=""):
         self.nombre = nombre
@@ -45,10 +43,10 @@ class Estacion:
             raise ValueError(f"El tiempo para la estación '{nombre}' debe ser un número positivo. Recibido: {tiempo}")
         self.tiempo = float(tiempo)
         self.predecesora_nombre = predecesora_nombre
-        self.es = 0.0  # Earliest Start
-        self.ef = 0.0  # Earliest Finish
-        self.ls = 0.0  # Latest Start
-        self.lf = 0.0  # Latest Finish
+        self.es = 0.0
+        self.ef = 0.0
+        self.ls = 0.0
+        self.lf = 0.0
         self.holgura = 0.0
         self.es_critica = False
 
@@ -57,8 +55,7 @@ class Estacion:
 
 class LineaProduccion:
     """
-    Gestiona el conjunto de estaciones, los parámetros de producción y realiza los cálculos
-    de CPM, métricas de eficiencia, asignación de empleados y generación de análisis.
+    Gestiona el conjunto de estaciones y realiza todos los cálculos.
     """
     def __init__(self, estaciones_data, unidades_a_producir, num_empleados_disponibles):
         self.estaciones_dict = {}
@@ -108,7 +105,7 @@ class LineaProduccion:
     def calcular_cpm(self):
         if not self.estaciones_lista: return
 
-        # Forward pass para ES y EF
+        # Forward pass
         for est in self.estaciones_lista:
             if not est.predecesora_nombre:
                 est.es = 0
@@ -119,7 +116,7 @@ class LineaProduccion:
         
         self.tiempo_total_camino_critico = max((est.ef for est in self.estaciones_lista), default=0.0)
 
-        # Backward pass para LS y LF
+        # Backward pass
         for est in reversed(self.estaciones_lista):
             sucesores = [s for s in self.estaciones_lista if s.predecesora_nombre == est.nombre]
             if not sucesores:
@@ -150,7 +147,6 @@ class LineaProduccion:
         if not self.estaciones_lista: return
 
         tiempo_estacion_mas_larga = self.cuello_botella_info.get("tiempo_proceso_individual", 0)
-        
         self.tiempo_ciclo_calculado = tiempo_estacion_mas_larga
         
         if self.unidades_a_producir > 0 and tiempo_estacion_mas_larga > 0:
@@ -174,17 +170,11 @@ class LineaProduccion:
         total_tiempo_tareas = sum(est.tiempo for est in self.estaciones_lista)
         if total_tiempo_tareas == 0: return
 
-        # Asignación proporcional
         asignaciones = []
         for est in self.estaciones_lista:
             proporcion = est.tiempo / total_tiempo_tareas
             empleados_ideal = proporcion * self.num_empleados_disponibles
-            asignaciones.append({
-                "nombre": est.nombre,
-                "ideal": empleados_ideal,
-                "base": int(empleados_ideal),
-                "fraccion": empleados_ideal - int(empleados_ideal)
-            })
+            asignaciones.append({"nombre": est.nombre, "ideal": empleados_ideal, "base": int(empleados_ideal), "fraccion": empleados_ideal - int(empleados_ideal)})
 
         empleados_asignados = sum(a['base'] for a in asignaciones)
         restantes = self.num_empleados_disponibles - empleados_asignados
@@ -195,69 +185,48 @@ class LineaProduccion:
             asignaciones[i]['base'] += 1
 
         mapa_asignacion = {a['nombre']: a['base'] for a in asignaciones}
-        self.empleados_asignados_por_estacion = [
-            {"nombre": est.nombre, "empleados": mapa_asignacion.get(est.nombre, 0)}
-            for est in self.estaciones_lista
-        ]
+        self.empleados_asignados_por_estacion = [{"nombre": est.nombre, "empleados": mapa_asignacion.get(est.nombre, 0)} for est in self.estaciones_lista]
 
     def generar_texto_analisis_resultados(self):
         analisis = f"### Análisis de Resultados (para {self.unidades_a_producir} unidades y {self.num_empleados_disponibles} empleados)\n\n"
-        
-        # CPM
-        analisis += f"**Ruta Crítica (CPM):**\n"
-        analisis += f"- **Tiempo Total del Proyecto:** `{self.tiempo_total_camino_critico:.2f}` minutos.\n"
+        analisis += f"**Ruta Crítica (CPM):**\n- **Tiempo Total del Proyecto:** `{self.tiempo_total_camino_critico:.2f}` minutos.\n"
         crit_est_str = ', '.join(self.camino_critico_nombres) if self.camino_critico_nombres else 'N/A'
         analisis += f"- **Estaciones Críticas:** `{crit_est_str}`\n\n"
-        
-        # Métricas
-        analisis += f"**Métricas de Producción:**\n"
-        analisis += f"- **Eficiencia de la Línea:** `{self.eficiencia_linea:.2f}%`\n"
+        analisis += f"**Métricas de Producción:**\n- **Eficiencia de la Línea:** `{self.eficiencia_linea:.2f}%`\n"
         cb_nombre = self.cuello_botella_info.get('nombre', 'N/A')
         cb_tiempo = self.cuello_botella_info.get('tiempo_proceso_individual', 0)
         analisis += f"- **Cuello de Botella:** Estación `'{cb_nombre}'` con `{cb_tiempo:.2f}` minutos.\n"
         analisis += f"- **Tiempo de Ciclo (Takt Time):** `{self.tiempo_ciclo_calculado:.2f}` minutos/unidad.\n"
         analisis += f"- **Tiempo Total de Producción Estimado:** `{self.tiempo_produccion_total_estimado:.2f}` minutos.\n\n"
-
-        # Asignación de Empleados
         analisis += "**Asignación de Empleados Sugerida:**\n"
         if self.empleados_asignados_por_estacion:
             for asignacion in self.empleados_asignados_por_estacion:
                 analisis += f"- Estación `'{asignacion['nombre']}'`: `{asignacion['empleados']}` empleado(s).\n"
         else:
             analisis += "- No se realizó asignación de empleados.\n"
-        
-        # Recomendaciones
         analisis += "\n**Recomendaciones:**\n"
         if self.eficiencia_linea < 75:
             analisis += f"- **Revisar Carga de Trabajo:** La eficiencia es moderada/baja. Considerar redistribuir tareas desde el cuello de botella (`{cb_nombre}`) hacia estaciones con más holgura.\n"
         else:
             analisis += "- **Buen Balance:** La eficiencia es alta. Mantener monitoreo continuo para mejoras incrementales.\n"
         analisis += "- **Flexibilidad:** Fomentar la capacitación cruzada (cross-training) de empleados para aumentar la flexibilidad de la línea.\n"
-
         return analisis
 
-# --- Funciones de Generación de Gráficos y Reportes ---
+# --- Funciones Auxiliares ---
 
 def generar_graficos(linea_obj):
-    """Genera y devuelve los objetos de figura de Matplotlib."""
     fig_pie, fig_bar = None, None
-
-    # Gráfico de Pastel
     if linea_obj.estaciones_lista and sum(est.tiempo for est in linea_obj.estaciones_lista) > 0:
         nombres = [est.nombre for est in linea_obj.estaciones_lista]
         tiempos = [est.tiempo for est in linea_obj.estaciones_lista]
-        
         fig_pie, ax1 = plt.subplots(figsize=(6, 4))
         ax1.pie(tiempos, labels=nombres, autopct='%1.1f%%', startangle=90)
         ax1.axis('equal')
         ax1.set_title('Distribución del Tiempo por Estación')
         plt.tight_layout()
-
-    # Gráfico de Barras
     if linea_obj.empleados_asignados_por_estacion:
         nombres = [a['nombre'] for a in linea_obj.empleados_asignados_por_estacion]
         empleados = [a['empleados'] for a in linea_obj.empleados_asignados_por_estacion]
-
         fig_bar, ax2 = plt.subplots(figsize=(6, 4))
         ax2.bar(nombres, empleados)
         ax2.set_xlabel('Estación')
@@ -265,152 +234,92 @@ def generar_graficos(linea_obj):
         ax2.set_title('Asignación de Empleados')
         plt.xticks(rotation=45, ha="right")
         plt.tight_layout()
-
     return fig_pie, fig_bar
 
 def generar_reporte_txt(results):
-    """Genera el contenido de un reporte TXT en memoria."""
     linea = results['linea_obj']
     analisis_texto = linea.generar_texto_analisis_resultados().replace("`", "").replace("*", "").replace("#", "")
-    
-    cpm_header = f"{'Estación':<20} | {'Tiempo':>7} | {'ES':>7} | {'EF':>7} | {'LS':>7} | {'LF':>7} | {'Holgura':>7} | {'Crítica':>8}\n"
-    cpm_header += "-" * len(cpm_header) + "\n"
-    cpm_rows = ""
-    for est in linea.estaciones_lista:
-        cpm_rows += f"{est.nombre:<20} | {est.tiempo:7.2f} | {est.es:7.2f} | {est.ef:7.2f} | {est.ls:7.2f} | {est.lf:7.2f} | {est.holgura:7.2f} | {'Sí' if est.es_critica else 'No':>8}\n"
-
-    contenido_txt = f"REPORTE DE BALANCEO DE LÍNEA\n"
-    contenido_txt += f"Fecha: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    contenido_txt += "="*70 + "\n\n"
-    contenido_txt += analisis_texto
-    contenido_txt += "\n\nDETALLE CPM\n" + cpm_header + cpm_rows
-    
+    cpm_header = f"{'Estación':<20} | {'Tiempo':>7} | {'ES':>7} | {'EF':>7} | {'LS':>7} | {'LF':>7} | {'Holgura':>7} | {'Crítica':>8}\n" + "-" * 95 + "\n"
+    cpm_rows = "".join([f"{est.nombre:<20} | {est.tiempo:7.2f} | {est.es:7.2f} | {est.ef:7.2f} | {est.ls:7.2f} | {est.lf:7.2f} | {est.holgura:7.2f} | {'Sí' if est.es_critica else 'No':>8}\n" for est in linea.estaciones_lista])
+    contenido_txt = f"REPORTE DE BALANCEO DE LÍNEA\nFecha: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n" + "="*70 + "\n\n" + analisis_texto + "\n\nDETALLE CPM\n" + cpm_header + cpm_rows
     return contenido_txt.encode('utf-8')
 
 # --- Lógica de Twilio con Streamlit Secrets ---
-LOW_EFFICIENCY_THRESHOLD = 75 # Umbral para enviar alerta
+LOW_EFFICIENCY_THRESHOLD = 75
 
 def inicializar_twilio_client():
-    """
-    Inicializa el cliente de Twilio usando las credenciales de st.secrets.
-    Devuelve el cliente si las credenciales son válidas, de lo contrario devuelve None.
-    """
-    if not IS_TWILIO_AVAILABLE:
-        return None
-
+    if not IS_TWILIO_AVAILABLE: return None
     try:
-        # Verifica que todas las claves secretas necesarias existan
         required_secrets = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_WHATSAPP_FROM_NUMBER", "DESTINATION_WHATSAPP_NUMBER"]
-        if all(hasattr(st, 'secrets') and key in st.secrets for key in required_secrets):
+        if hasattr(st, 'secrets') and all(key in st.secrets for key in required_secrets):
             account_sid = st.secrets["TWILIO_ACCOUNT_SID"]
             auth_token = st.secrets["TWILIO_AUTH_TOKEN"]
-            
             if account_sid.startswith("AC") and len(auth_token) == 32:
-                client = Client(account_sid, auth_token)
                 st.session_state.twilio_configured = True
-                return client
-            else:
-                # Muestra una advertencia si el formato es incorrecto
-                if 'twilio_warning_shown' not in st.session_state:
-                    st.warning("Credenciales de Twilio parecen tener un formato incorrecto. Las notificaciones están desactivadas.", icon="⚠️")
-                    st.session_state.twilio_warning_shown = True # Evita mostrarlo en cada recarga
-                st.session_state.twilio_configured = False
-                return None
-        else:
-            st.session_state.twilio_configured = False
-            return None
-    except Exception as e:
-        if 'twilio_error_shown' not in st.session_state:
-            st.error(f"Error al inicializar el cliente de Twilio: {e}")
-            st.session_state.twilio_error_shown = True
-        st.session_state.twilio_configured = False
-        return None
+                return Client(account_sid, auth_token)
+    except Exception:
+        pass # Silently fail if secrets are not ok
+    st.session_state.twilio_configured = False
+    return None
 
 def enviar_alerta_balanceo_whatsapp(mensaje):
-    """
-    Envía una alerta por WhatsApp si el cliente de Twilio está configurado.
-    """
-    if not st.session_state.get('twilio_configured', False) or st.session_state.twilio_client is None:
-        return False
-    
+    if not st.session_state.get('twilio_configured', False) or st.session_state.twilio_client is None: return False
     try:
         from_number = st.secrets["TWILIO_WHATSAPP_FROM_NUMBER"]
         to_number = st.secrets["DESTINATION_WHATSAPP_NUMBER"]
-
-        message_instance = st.session_state.twilio_client.messages.create(
-            from_=f'whatsapp:{from_number}',
-            body=mensaje,
-            to=f'whatsapp:{to_number}'
-        )
+        message_instance = st.session_state.twilio_client.messages.create(from_=f'whatsapp:{from_number}', body=mensaje, to=f'whatsapp:{to_number}')
         st.toast(f"¡Alerta de WhatsApp enviada a {to_number}!", icon="✅")
         return True
     except Exception as e:
-        st.error(f"Error crítico al enviar la alerta de WhatsApp: {e}")
+        st.error(f"Error al enviar la alerta de WhatsApp: {e}")
         return False
 
 # --- Interfaz de Streamlit ---
-
 st.set_page_config(page_title="Optimización de Líneas", layout="wide", page_icon="⚙️")
 
-# --- Inicialización del Cliente de Twilio ---
 if 'twilio_client' not in st.session_state:
     st.session_state.twilio_client = inicializar_twilio_client()
 
 st.title("⚙️ Optimización de Líneas de Producción")
-st.markdown("Herramienta avanzada para el análisis y balanceo eficiente de sus procesos productivos.")
+st.markdown("Herramienta para el análisis y balanceo eficiente de sus procesos productivos.")
 
-# --- Inicialización del Estado de la Sesión ---
 if 'estaciones' not in st.session_state:
     st.session_state.estaciones = [
-        {'nombre': 'Corte', 'tiempo': 2.0, 'predecesora': ''},
-        {'nombre': 'Doblado', 'tiempo': 3.0, 'predecesora': 'Corte'},
-        {'nombre': 'Ensamblaje', 'tiempo': 5.0, 'predecesora': 'Doblado'},
-        {'nombre': 'Pintura', 'tiempo': 4.0, 'predecesora': 'Ensamblaje'},
+        {'nombre': 'Corte', 'tiempo': 2.0, 'predecesora': ''}, {'nombre': 'Doblado', 'tiempo': 3.0, 'predecesora': 'Corte'},
+        {'nombre': 'Ensamblaje', 'tiempo': 5.0, 'predecesora': 'Doblado'}, {'nombre': 'Pintura', 'tiempo': 4.0, 'predecesora': 'Ensamblaje'},
         {'nombre': 'Empaque', 'tiempo': 1.5, 'predecesora': 'Pintura'}
     ]
 if 'results' not in st.session_state:
     st.session_state.results = None
 
-# --- Barra Lateral de Entradas ---
 with st.sidebar:
     st.header("1. Parámetros Globales")
     unidades = st.number_input("Unidades a Producir", min_value=1, value=100, step=10)
     empleados = st.number_input("Empleados Disponibles", min_value=1, value=5, step=1)
-    
     st.header("2. Configuración de Estaciones")
     num_estaciones = st.number_input("Número de Estaciones", min_value=1, value=len(st.session_state.estaciones), key="num_est")
 
-    # Ajustar el tamaño de la lista de estaciones en el estado
     current_len = len(st.session_state.estaciones)
     if num_estaciones > current_len:
-        for _ in range(num_estaciones - current_len):
-            st.session_state.estaciones.append({'nombre': '', 'tiempo': 1.0, 'predecesora': ''})
+        st.session_state.estaciones.extend([{'nombre': '', 'tiempo': 1.0, 'predecesora': ''}] * (num_estaciones - current_len))
     elif num_estaciones < current_len:
         st.session_state.estaciones = st.session_state.estaciones[:num_estaciones]
     
-    # Crear inputs para cada estación
     for i in range(num_estaciones):
         with st.expander(f"Estación {i+1}: {st.session_state.estaciones[i]['nombre'] or 'Nueva'}", expanded=True):
             st.session_state.estaciones[i]['nombre'] = st.text_input(f"Nombre Estación {i+1}", value=st.session_state.estaciones[i]['nombre'], key=f"nombre_{i}")
             st.session_state.estaciones[i]['tiempo'] = st.number_input(f"Tiempo (min) {i+1}", min_value=0.01, value=st.session_state.estaciones[i]['tiempo'], key=f"tiempo_{i}")
-            
             predecesoras_disponibles = [""] + [est['nombre'] for j, est in enumerate(st.session_state.estaciones) if i != j and est['nombre']]
             current_pred = st.session_state.estaciones[i]['predecesora']
-            try:
-                idx = predecesoras_disponibles.index(current_pred)
-            except ValueError:
-                idx = 0
-            
+            idx = predecesoras_disponibles.index(current_pred) if current_pred in predecesoras_disponibles else 0
             st.session_state.estaciones[i]['predecesora'] = st.selectbox(f"Predecesora {i+1}", options=predecesoras_disponibles, index=idx, key=f"pred_{i}")
 
-# --- Botón de Cálculo Principal ---
 if st.sidebar.button("Calcular Balanceo", type="primary", use_container_width=True):
     with st.spinner("Realizando cálculos..."):
         try:
-            # Validación de datos
-            nombres_unicos = {est['nombre'].lower() for est in st.session_state.estaciones if est['nombre']}
-            if len(nombres_unicos) != len([est['nombre'] for est in st.session_state.estaciones if est['nombre']]):
-                st.error("Error: Existen nombres de estación duplicados. Por favor, corríjalos.")
+            nombres = [est['nombre'] for est in st.session_state.estaciones if est['nombre']]
+            if len(set(n.lower() for n in nombres)) != len(nombres):
+                st.error("Error: Existen nombres de estación duplicados.")
             elif any(not est['nombre'] or est['tiempo'] <= 0 for est in st.session_state.estaciones):
                 st.error("Error: Todas las estaciones deben tener un nombre y un tiempo positivo.")
             else:
@@ -419,89 +328,51 @@ if st.sidebar.button("Calcular Balanceo", type="primary", use_container_width=Tr
                 linea.calcular_metricas_produccion()
                 linea.asignar_empleados()
                 
-                # Envío de alerta si la eficiencia es baja y Twilio está configurado
                 if linea.eficiencia_linea < LOW_EFFICIENCY_THRESHOLD:
-                    mensaje_alerta = (
-                        f"¡Alerta de Producción! 📉\n"
-                        f"La eficiencia de la línea ha caído a *{linea.eficiencia_linea:.2f}%*, "
-                        f"por debajo del umbral de {LOW_EFFICIENCY_THRESHOLD}%.\n\n"
-                        f"Cuello de botella: Estación '{linea.cuello_botella_info.get('nombre', 'N/A')}'."
-                    )
+                    mensaje_alerta = (f"¡Alerta de Producción! 📉\nLa eficiencia de la línea ha caído a *{linea.eficiencia_linea:.2f}%*.\nCuello de botella: Estación '{linea.cuello_botella_info.get('nombre', 'N/A')}'.")
                     enviar_alerta_balanceo_whatsapp(mensaje_alerta)
 
-                fig_pie, fig_bar = generar_graficos(linea)
-
-                st.session_state.results = {
-                    "linea_obj": linea,
-                    "fig_pie": fig_pie,
-                    "fig_bar": fig_bar
-                }
-                st.success("¡Cálculo completado exitosamente!")
-
+                st.session_state.results = {"linea_obj": linea, "fig_pie": None, "fig_bar": None}
+                st.session_state.results['fig_pie'], st.session_state.results['fig_bar'] = generar_graficos(linea)
+                st.success("¡Cálculo completado!")
         except ValueError as e:
             st.error(f"Error de validación: {e}")
         except Exception as e:
             st.error(f"Ocurrió un error inesperado: {e}")
 
-# --- Área de Resultados ---
 if st.session_state.results:
     linea_res = st.session_state.results['linea_obj']
-    
     st.header("3. Acciones y Resultados")
     
     col1, col2 = st.columns(2)
     with col1:
-        txt_data = generar_reporte_txt(st.session_state.results)
-        st.download_button(
-            label="📄 Exportar a TXT",
-            data=txt_data,
-            file_name="reporte_balanceo.txt",
-            mime="text/plain",
-            use_container_width=True
-        )
+        st.download_button(label="📄 Exportar a TXT", data=generar_reporte_txt(st.session_state.results), file_name="reporte_balanceo.txt", mime="text/plain", use_container_width=True)
     with col2:
         if st.session_state.get('twilio_configured', False):
             st.success("Notificaciones por WhatsApp activas.", icon="🔔")
         else:
-            st.info("Notificaciones por WhatsApp inactivas. Configure sus 'secrets' para habilitarlas.", icon="ℹ️")
+            st.info("Notificaciones por WhatsApp inactivas.", icon="ℹ️")
 
     tab_analisis, tab_cpm, tab_graficos = st.tabs(["📊 Análisis y Métricas", "📈 Detalle CPM", "🎨 Gráficos"])
-
     with tab_analisis:
         st.markdown(linea_res.generar_texto_analisis_resultados())
-
     with tab_cpm:
         st.subheader("Detalle de Estaciones (Método de la Ruta Crítica)")
-        cpm_data = []
-        for est in linea_res.estaciones_lista:
-            cpm_data.append({
-                "Estación": est.nombre,
-                "Tiempo": est.tiempo,
-                "ES": est.es, "EF": est.ef,
-                "LS": est.ls, "LF": est.lf,
-                "Holgura": est.holgura,
-                "Crítica": "Sí" if est.es_critica else "No"
-            })
+        cpm_data = [{"Estación": est.nombre, "Tiempo": est.tiempo, "ES": est.es, "EF": est.ef, "LS": est.ls, "LF": est.lf, "Holgura": est.holgura, "Crítica": "Sí" if est.es_critica else "No"} for est in linea_res.estaciones_lista]
         st.dataframe(cpm_data, use_container_width=True)
-
     with tab_graficos:
         st.subheader("Visualización Gráfica")
-        fig_p = st.session_state.results['fig_pie']
-        fig_b = st.session_state.results['fig_bar']
-        
+        fig_p, fig_b = st.session_state.results['fig_pie'], st.session_state.results['fig_bar']
         if fig_p or fig_b:
             col_g1, col_g2 = st.columns(2)
             with col_g1:
-                if fig_p:
-                    st.pyplot(fig_p)
-                else:
-                    st.info("No hay datos para el gráfico de distribución de tiempo.")
+                if fig_p: st.pyplot(fig_p)
+                else: st.info("No hay datos para el gráfico de distribución.")
             with col_g2:
-                if fig_b:
-                    st.pyplot(fig_b)
-                else:
-                    st.info("No hay datos para el gráfico de asignación de empleados.")
+                if fig_b: st.pyplot(fig_b)
+                else: st.info("No hay datos para el gráfico de asignación.")
         else:
-            st.warning("No se pudieron generar gráficos con los datos proporcionados.")
+            st.warning("No se pudieron generar gráficos.")
 else:
-    st.info("Ingrese los parámetros en la barra lateral y presione 'Calcular Balanceo' para ver los resultados.")
+    st.info("Ingrese los parámetros y presione 'Calcular Balanceo' para ver los resultados.")
+
