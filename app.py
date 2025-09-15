@@ -2,25 +2,36 @@
 """
 Aplicación Streamlit para el Balanceo de Líneas de Producción.
 
-Versión final optimizada para cuentas de prueba de Twilio (Trial Account),
-con interfaz de usuario mejorada y diagnósticos avanzados.
+Versión 3.0: Interfaz rediseñada sin barra lateral, exportación a PDF profesional
+con gráficos, y métricas de optimización avanzadas para un análisis más profundo.
 """
 import streamlit as st
 import datetime
 import matplotlib
 matplotlib.use('Agg') # Backend para entornos sin GUI
+import matplotlib.pyplot as plt
+from io import BytesIO
 
-# --- Importación de Twilio ---
+# --- Importaciones para PDF y Twilio ---
+try:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    IS_PDF_AVAILABLE = True
+except ImportError:
+    IS_PDF_AVAILABLE = False
+
 try:
     from twilio.rest import Client
     from twilio.base.exceptions import TwilioRestException
     IS_TWILIO_AVAILABLE = True
 except ImportError:
     IS_TWILIO_AVAILABLE = False
-    Client = None
-    TwilioRestException = None
+    Client, TwilioRestException = None, None
 
-# --- Lógica de Negocio (Clases sin cambios) ---
+# --- Lógica de Negocio (Clases) ---
 class Estacion:
     """Representa una estación de trabajo."""
     def __init__(self, nombre, tiempo, predecesora_nombre=""):
@@ -33,13 +44,14 @@ class Estacion:
         self.es_critica = False
 
 class LineaProduccion:
-    """Gestiona los cálculos de la línea de producción."""
+    """Gestiona los cálculos de la línea de producción con métricas avanzadas."""
     def __init__(self, estaciones_data, unidades, empleados):
         self.estaciones_dict = {}
         self.estaciones_lista = []
         self._procesar_estaciones_data(estaciones_data)
         self.unidades_a_producir = unidades
         self.num_empleados_disponibles = empleados
+        # Inicialización de todas las métricas
         self.tiempo_total_camino_critico = 0.0
         self.camino_critico_nombres = []
         self.tiempo_ciclo_calculado = 0.0
@@ -47,6 +59,8 @@ class LineaProduccion:
         self.eficiencia_linea = 0.0
         self.cuello_botella_info = {}
         self.empleados_asignados_por_estacion = []
+        self.tasa_produccion = 0.0
+        self.tiempo_inactivo_total = 0.0
 
     def _procesar_estaciones_data(self, estaciones_data):
         nombres_vistos = set()
@@ -75,21 +89,25 @@ class LineaProduccion:
             est.holgura = est.ls - est.es
             if abs(est.holgura) < 1e-6:
                 est.es_critica = True
-        self.camino_critico_nombres = [est.nombre for est in self.estaciones_lista if est.es_critica]
+        self.camino_critico_nombres = sorted([est.nombre for est in self.estaciones_lista if est.es_critica])
         if self.estaciones_lista:
             cuello_botella = max(self.estaciones_lista, key=lambda e: e.tiempo)
             self.cuello_botella_info = {"nombre": cuello_botella.nombre, "tiempo_proceso_individual": cuello_botella.tiempo}
 
-    def calcular_metricas_produccion(self):
+    def calcular_metricas_avanzadas(self):
         tiempo_cuello_botella = self.cuello_botella_info.get("tiempo_proceso_individual", 0)
         self.tiempo_ciclo_calculado = tiempo_cuello_botella
         if self.unidades_a_producir > 0 and tiempo_cuello_botella > 0:
             self.tiempo_produccion_total_estimado = self.tiempo_total_camino_critico + (self.unidades_a_producir - 1) * tiempo_cuello_botella
+            self.tasa_produccion = 60 / tiempo_cuello_botella # Unidades por hora
         else:
             self.tiempo_produccion_total_estimado = self.tiempo_total_camino_critico
+            self.tasa_produccion = 0.0
+        
         sum_tiempos = sum(est.tiempo for est in self.estaciones_lista)
         denominador = len(self.estaciones_lista) * tiempo_cuello_botella
         self.eficiencia_linea = (sum_tiempos / denominador) * 100 if denominador > 0 else 0.0
+        self.tiempo_inactivo_total = sum(est.holgura for est in self.estaciones_lista if not est.es_critica)
 
     def asignar_empleados(self):
         total_tiempo = sum(est.tiempo for est in self.estaciones_lista)
@@ -100,151 +118,210 @@ class LineaProduccion:
         for a in asignaciones: a['base'], a['fraccion'] = int(a['ideal']), a['ideal'] - int(a['ideal'])
         restantes = self.num_empleados_disponibles - sum(a['base'] for a in asignaciones)
         asignaciones.sort(key=lambda x: x['fraccion'], reverse=True)
-        for i in range(restantes): asignaciones[i]['base'] += 1
+        for i in range(min(restantes, len(asignaciones))): asignaciones[i]['base'] += 1
         mapa = {a['nombre']: a['base'] for a in asignaciones}
         self.empleados_asignados_por_estacion = [{"nombre": e.nombre, "empleados": mapa.get(e.nombre, 0)} for e in self.estaciones_lista]
-
-# --- Lógica de Twilio con Diagnóstico y Manejo de Errores Específico ---
-LOW_EFFICIENCY_THRESHOLD = 75
-
-def inicializar_twilio_client():
-    if not IS_TWILIO_AVAILABLE: return None
-    try:
-        if hasattr(st, 'secrets') and all(k in st.secrets for k in ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]):
-            account_sid = st.secrets["TWILIO_ACCOUNT_SID"]
-            auth_token = st.secrets["TWILIO_AUTH_TOKEN"]
-            if account_sid.startswith("AC") and len(auth_token) > 30:
-                st.session_state.twilio_configured = True
-                return Client(account_sid, auth_token)
-    except Exception as e:
-        st.error(f"Error al inicializar cliente Twilio: {e}")
-    st.session_state.twilio_configured = False
-    return None
-
-def enviar_alerta_balanceo_whatsapp(mensaje):
-    if not st.session_state.get('twilio_configured'): return
-    try:
-        from_number = st.secrets["TWILIO_WHATSAPP_FROM_NUMBER"]
-        to_number = st.secrets["DESTINATION_WHATSAPP_NUMBER"]
-        
-        # --- LÓGICA MEJORADA ---
-        # Añade el prefijo obligatorio para cuentas de prueba.
-        mensaje_final = f"Your Twilio code is 1238432 \n\n{mensaje}"
-
-        st.session_state.twilio_client.messages.create(
-            from_=f'whatsapp:{from_number}',
-            body=mensaje_final,
-            to=f'whatsapp:{to_number}'
-        )
-        st.toast(f"¡Alerta de WhatsApp enviada a {to_number}!", icon="✅")
     
-    except TwilioRestException as e:
-        # --- MANEJO DE ERRORES ESPECÍFICO ---
-        st.error(f"Error de Twilio: {e.msg}")
-        if e.code == 21608:
-            st.warning("Error 21608: El número de destino no está verificado en tu cuenta de prueba. Asegúrate de haber enviado la palabra clave desde tu WhatsApp al Sandbox de Twilio.", icon="📱")
-        elif e.code == 21211:
-            st.error("Error 21211: El número 'From' no es un número válido de Twilio. Revisa tu secret `TWILIO_WHATSAPP_FROM_NUMBER`.", icon="📞")
-    except Exception as e:
-        st.error(f"Error inesperado al enviar WhatsApp: {e}")
+    def ejecutar_calculos(self):
+        """Ejecuta toda la secuencia de cálculos."""
+        self.calcular_cpm()
+        self.calcular_metricas_avanzadas()
+        self.asignar_empleados()
 
-# --- Interfaz de Usuario (sin cambios funcionales) ---
-st.set_page_config(page_title="Optimización de Líneas", layout="wide", page_icon="🏭")
-# ... (El resto del código de la interfaz de usuario se mantiene igual)
-# ... (Se omite por brevedad, es el mismo que la versión anterior)
+# --- Funciones de Generación (Gráficos, PDF, Twilio) ---
+def generar_graficos(linea_obj):
+    """Genera y devuelve los objetos de figura de Matplotlib para tiempos y empleados."""
+    fig_pie, fig_bar = None, None
+    if linea_obj.estaciones_lista and sum(e.tiempo for e in linea_obj.estaciones_lista) > 0:
+        fig_pie, ax1 = plt.subplots(figsize=(5, 4))
+        ax1.pie([e.tiempo for e in linea_obj.estaciones_lista], labels=[e.nombre for e in linea_obj.estaciones_lista], autopct='%1.1f%%', startangle=90)
+        ax1.axis('equal')
+        ax1.set_title('Distribución de Tiempos de Proceso')
+        plt.tight_layout()
+    if linea_obj.empleados_asignados_por_estacion:
+        fig_bar, ax2 = plt.subplots(figsize=(5, 4))
+        ax2.bar([a['nombre'] for a in linea_obj.empleados_asignados_por_estacion], [a['empleados'] for a in linea_obj.empleados_asignados_por_estacion], color='skyblue')
+        ax2.set_xlabel('Estaciones')
+        ax2.set_ylabel('Empleados Asignados')
+        ax2.set_title('Asignación de Empleados Sugerida')
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+    return fig_pie, fig_bar
+
+def generar_reporte_pdf(linea_obj):
+    """Crea un reporte PDF profesional con KPIs, tablas y gráficos."""
+    if not IS_PDF_AVAILABLE:
+        st.error("La librería 'reportlab' no está instalada. La exportación a PDF no está disponible.")
+        return None
+    
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=inch*0.5, leftMargin=inch*0.5, topMargin=inch*0.5, bottomMargin=inch*0.5)
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph("Reporte de Optimización de Línea de Producción", styles['h1']))
+    story.append(Paragraph(f"Generado el: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", styles['Normal']))
+    story.append(Spacer(1, 0.2*inch))
+
+    # KPIs
+    story.append(Paragraph("Indicadores Clave de Rendimiento (KPIs)", styles['h2']))
+    kpi_data = [
+        ["Eficiencia de Línea:", f"{linea_obj.eficiencia_linea:.2f}%"],
+        ["Tiempo de Ciclo:", f"{linea_obj.tiempo_ciclo_calculado:.2f} min/ud"],
+        ["Tasa de Producción:", f"{linea_obj.tasa_produccion:.2f} uds/hora"],
+        ["Tiempo Total Estimado:", f"{linea_obj.tiempo_produccion_total_estimado:.2f} min"],
+        ["Tiempo Inactivo Total (Holgura):", f"{linea_obj.tiempo_inactivo_total:.2f} min"]
+    ]
+    kpi_table = Table(kpi_data, colWidths=[3*inch, 2*inch])
+    kpi_table.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'LEFT'), ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
+    story.append(kpi_table)
+    story.append(Spacer(1, 0.2*inch))
+
+    # CPM Table
+    story.append(Paragraph("Detalle de la Ruta Crítica (CPM)", styles['h2']))
+    cpm_header = ["Estación", "Tiempo", "ES", "EF", "LS", "LF", "Holgura", "Crítica"]
+    cpm_data = [cpm_header] + [[est.nombre, f"{est.tiempo:.2f}", f"{est.es:.2f}", f"{est.ef:.2f}", f"{est.ls:.2f}", f"{est.lf:.2f}", f"{est.holgura:.2f}", "Sí" if est.es_critica else "No"] for est in linea_obj.estaciones_lista]
+    cpm_table = Table(cpm_data, hAlign='LEFT')
+    cpm_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.grey), ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0,0), (-1,0), 12), ('GRID', (0,0), (-1,-1), 1, colors.black)
+    ]))
+    story.append(cpm_table)
+    story.append(Spacer(1, 0.2*inch))
+
+    # Graficos
+    fig_pie, fig_bar = generar_graficos(linea_obj)
+    charts = []
+    if fig_pie:
+        img_buffer = BytesIO()
+        fig_pie.savefig(img_buffer, format='PNG', dpi=300)
+        img_buffer.seek(0)
+        charts.append(Image(img_buffer, width=3.5*inch, height=2.8*inch))
+    if fig_bar:
+        img_buffer = BytesIO()
+        fig_bar.savefig(img_buffer, format='PNG', dpi=300)
+        img_buffer.seek(0)
+        charts.append(Image(img_buffer, width=3.5*inch, height=2.8*inch))
+    if charts:
+        story.append(Table([charts]))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+# --- Configuración Inicial y Estado ---
+st.set_page_config(page_title="Optimizador de Líneas", layout="wide", page_icon="🏭")
+
 DEFAULT_ESTACIONES = [
-    {'nombre': 'Corte', 'tiempo': 2.0, 'predecesora': ''},
-    {'nombre': 'Doblado', 'tiempo': 3.0, 'predecesora': 'Corte'},
-    {'nombre': 'Ensamblaje', 'tiempo': 5.0, 'predecesora': 'Doblado'},
-    {'nombre': 'Pintura', 'tiempo': 4.0, 'predecesora': 'Ensamblaje'},
+    {'nombre': 'Corte', 'tiempo': 2.0, 'predecesora': ''}, {'nombre': 'Doblado', 'tiempo': 3.0, 'predecesora': 'Corte'},
+    {'nombre': 'Ensamblaje', 'tiempo': 5.0, 'predecesora': 'Doblado'}, {'nombre': 'Pintura', 'tiempo': 4.0, 'predecesora': 'Ensamblaje'},
     {'nombre': 'Empaque', 'tiempo': 1.5, 'predecesora': 'Pintura'}
 ]
 
 if 'estaciones' not in st.session_state:
     st.session_state.estaciones = DEFAULT_ESTACIONES
 
-if 'twilio_client' not in st.session_state:
-    st.session_state.twilio_client = inicializar_twilio_client()
+# --- Interfaz de Usuario Principal ---
+st.title("🏭 Optimizador Avanzado de Líneas de Producción")
 
-st.title("🏭 Optimizador de Líneas de Producción")
-st.markdown("Una herramienta interactiva para analizar, balancear y mejorar la eficiencia de sus procesos productivos.")
+with st.expander("⚙️ Configurar Simulación y Estaciones", expanded=True):
+    col_params, col_actions = st.columns([1, 1])
+    with col_params:
+        st.subheader("Parámetros Globales")
+        unidades = st.number_input("Unidades a Producir", min_value=1, value=100, step=10)
+        empleados = st.number_input("Empleados Disponibles", min_value=1, value=5, step=1)
+    
+    with col_actions:
+        st.subheader("Gestionar Estaciones")
+        c1, c2 = st.columns(2)
+        if c1.button("➕ Añadir Estación", use_container_width=True):
+            st.session_state.estaciones.append({'nombre': '', 'tiempo': 1.0, 'predecesora': ''})
+            st.rerun()
+        if c2.button("➖ Quitar Última", use_container_width=True, disabled=len(st.session_state.estaciones) <= 1):
+            st.session_state.estaciones.pop()
+            st.rerun()
 
-with st.sidebar:
-    st.header("⚙️ 1. Parámetros de Simulación")
-    unidades = st.number_input("Unidades a Producir", min_value=1, value=100, step=10, help="Total de unidades que se fabricarán en el lote.")
-    empleados = st.number_input("Empleados Disponibles", min_value=1, value=5, step=1, help="Número total de operarios para asignar en la línea.")
+    st.markdown("---")
+    st.subheader("Definición de Estaciones")
     
-    st.header("🏢 2. Configuración de Estaciones")
-    num_estaciones = len(st.session_state.estaciones)
-    
-    for i in range(num_estaciones):
-        with st.expander(f"Estación {i+1}: **{st.session_state.estaciones[i]['nombre'] or 'Nueva'}**", expanded=True):
-            c1, c2 = st.columns(2)
-            st.session_state.estaciones[i]['nombre'] = c1.text_input("Nombre", value=st.session_state.estaciones[i]['nombre'], key=f"nombre_{i}")
-            st.session_state.estaciones[i]['tiempo'] = c2.number_input("Tiempo (min)", min_value=0.01, value=st.session_state.estaciones[i]['tiempo'], key=f"tiempo_{i}")
-            
+    # Layout dinámico de columnas para las estaciones
+    cols = st.columns(max(1, min(len(st.session_state.estaciones), 4)))
+    for i, est in enumerate(st.session_state.estaciones):
+        with cols[i % 4]:
+            st.markdown(f"**Estación {i+1}**")
+            st.session_state.estaciones[i]['nombre'] = st.text_input("Nombre", value=est['nombre'], key=f"nombre_{i}")
+            st.session_state.estaciones[i]['tiempo'] = st.number_input("Tiempo (min)", min_value=0.01, value=est['tiempo'], key=f"tiempo_{i}")
             predecesoras_opts = [""] + [e['nombre'] for j, e in enumerate(st.session_state.estaciones) if i != j and e['nombre']]
-            current_pred = st.session_state.estaciones[i]['predecesora']
-            idx = predecesoras_opts.index(current_pred) if current_pred in predecesoras_opts else 0
+            current_pred = est['predecesora']
+            try:
+                idx = predecesoras_opts.index(current_pred)
+            except ValueError:
+                idx = 0
             st.session_state.estaciones[i]['predecesora'] = st.selectbox("Predecesora", options=predecesoras_opts, index=idx, key=f"pred_{i}")
 
-    c1, c2 = st.columns(2)
-    if c1.button("➕ Añadir Estación", use_container_width=True):
-        st.session_state.estaciones.append({'nombre': '', 'tiempo': 1.0, 'predecesora': ''})
-        st.rerun()
-    if c2.button("➖ Quitar Última", use_container_width=True, disabled=len(st.session_state.estaciones) <= 1):
-        st.session_state.estaciones.pop()
-        st.rerun()
-
-    st.header("🚀 3. Acciones")
-    
-    if st.button("Calcular Balanceo", type="primary", use_container_width=True):
-        with st.spinner("Realizando cálculos..."):
+# --- Botones de Acción ---
+c1, c2, c3 = st.columns([2, 1, 1])
+with c1:
+    if st.button("🚀 Calcular y Optimizar", type="primary", use_container_width=True):
+        with st.spinner("Realizando análisis completo..."):
             try:
                 linea = LineaProduccion(st.session_state.estaciones, unidades, empleados)
-                linea.calcular_cpm()
-                linea.calcular_metricas_produccion()
-                linea.asignar_empleados()
+                linea.ejecutar_calculos()
                 st.session_state.results = {"linea_obj": linea}
-                st.success("¡Cálculo completado!")
-
-                if linea.eficiencia_linea < LOW_EFFICIENCY_THRESHOLD:
-                    mensaje = (f"¡Alerta de Producción! 📉\nLa eficiencia de la línea es de solo *{linea.eficiencia_linea:.2f}%*.\n"
-                               f"Cuello de botella: '{linea.cuello_botella_info.get('nombre', 'N/A')}' con {linea.cuello_botella_info.get('tiempo_proceso_individual', 0):.2f} min.")
-                    enviar_alerta_balanceo_whatsapp(mensaje)
-
-            except ValueError as e:
-                st.error(f"Error de validación: {e}")
-                st.session_state.results = None
+                st.success("¡Análisis completado!")
             except Exception as e:
-                st.error(f"Ocurrió un error inesperado: {e}")
+                st.error(f"Error en el cálculo: {e}")
                 st.session_state.results = None
-    
-    if st.button("Resetear a Valores por Defecto", use_container_width=True):
+
+with c2:
+    if 'results' in st.session_state and st.session_state.results:
+        pdf_data = generar_reporte_pdf(st.session_state.results['linea_obj'])
+        if pdf_data:
+            st.download_button(label="📄 Descargar Reporte PDF", data=pdf_data, file_name="reporte_optimizacion.pdf", mime="application/pdf", use_container_width=True)
+
+with c3:
+    if st.button("🔄 Resetear", use_container_width=True):
         st.session_state.estaciones = DEFAULT_ESTACIONES
         st.session_state.results = None
         st.rerun()
 
+# --- Panel de Resultados ---
 if 'results' in st.session_state and st.session_state.results:
     linea_res = st.session_state.results['linea_obj']
-    st.header("📊 Resultados Clave (KPIs)")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Eficiencia de Línea", f"{linea_res.eficiencia_linea:.1f}%", delta=f"{linea_res.eficiencia_linea - 85:.1f}% vs. Objetivo (85%)")
-    col2.metric("Tiempo de Ciclo", f"{linea_res.tiempo_ciclo_calculado:.2f} min/ud")
-    col3.metric("Tiempo Total Estimado", f"{linea_res.tiempo_produccion_total_estimado:.1f} min")
-    
-    tab1, tab2, tab3 = st.tabs(["📈 Análisis Detallado", "📋 Tabla CPM", "🧑‍💼 Asignación de Personal"])
+    st.markdown("---")
+    st.header("📊 Resultados de la Optimización")
+
+    # KPIs
+    kpi_cols = st.columns(5)
+    kpi_cols[0].metric("Eficiencia", f"{linea_res.eficiencia_linea:.1f}%")
+    kpi_cols[1].metric("Tiempo de Ciclo", f"{linea_res.tiempo_ciclo_calculado:.2f} min/ud")
+    kpi_cols[2].metric("Tasa de Producción", f"{linea_res.tasa_produccion:.1f} uds/hr")
+    kpi_cols[3].metric("Tiempo Total", f"{linea_res.tiempo_produccion_total_estimado:.1f} min")
+    kpi_cols[4].metric("Tiempo Inactivo", f"{linea_res.tiempo_inactivo_total:.1f} min")
+
+    # Tabs con análisis
+    tab1, tab2, tab3 = st.tabs(["📈 **Análisis y Sugerencias**", "📋 **Tabla CPM**", "🧑‍💼 **Asignación de Personal**"])
     with tab1:
-        st.subheader("Análisis y Recomendaciones")
+        st.subheader("Sugerencias de Optimización")
         cb_nombre = linea_res.cuello_botella_info.get('nombre', 'N/A')
-        st.info(f"**Cuello de Botella:** La estación **'{cb_nombre}'** es la más lenta, con un tiempo de **{linea_res.tiempo_ciclo_calculado:.2f} minutos**.", icon="⚠️")
+        st.info(f"**Cuello de Botella:** La estación **'{cb_nombre}'** con **{linea_res.tiempo_ciclo_calculado:.2f} minutos** es el factor que limita toda la producción.", icon="⚠️")
+        
+        estaciones_con_holgura = sorted([est for est in linea_res.estaciones_lista if not est.es_critica and est.holgura > 0], key=lambda x: x.holgura, reverse=True)
+        if linea_res.eficiencia_linea < 85 and estaciones_con_holgura:
+            mejor_candidata = estaciones_con_holgura[0]
+            st.warning(f"**Sugerencia Clave:** La eficiencia puede mejorar. Considere mover micro-tareas desde '{cb_nombre}' hacia la estación con más tiempo inactivo: **'{mejor_candidata.nombre}'**, que tiene **{mejor_candidata.holgura:.2f} minutos de holgura**.", icon="🛠️")
+        elif linea_res.eficiencia_linea >= 85:
+            st.success("**¡Excelente Balance!** La línea opera con alta eficiencia. El tiempo inactivo es mínimo. Mantenga el monitoreo para asegurar la sostenibilidad y busque mejoras incrementales.", icon="🏆")
+
     with tab2:
-        st.subheader("Detalle de la Ruta Crítica (CPM)")
-        cpm_data = [{"Estación": est.nombre, "Tiempo": est.tiempo, "ES": est.es, "EF": est.ef, "LS": est.ls, "LF": est.lf, "Holgura": est.holgura, "Crítica": "🔴 Sí" if est.es_critica else "🟢 No"} for est in linea_res.estaciones_lista]
-        st.dataframe(cpm_data, use_container_width=True)
+        st.dataframe(
+            [{"Estación": est.nombre, "Tiempo": est.tiempo, "ES": est.es, "EF": est.ef, "LS": est.ls, "LF": est.lf, "Holgura": est.holgura, "Crítica": "🔴 Sí" if est.es_critica else "🟢 No"} for est in linea_res.estaciones_lista],
+            use_container_width=True
+        )
+
     with tab3:
-        st.subheader("Asignación Sugerida de Empleados")
         st.dataframe(linea_res.empleados_asignados_por_estacion, use_container_width=True)
 else:
-    st.info("Configure los parámetros en la barra lateral y presione 'Calcular Balanceo' para ver los resultados.")
+    st.info("Configure los parámetros y presione 'Calcular y Optimizar' para ver los resultados.")
 
