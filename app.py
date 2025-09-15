@@ -2,8 +2,9 @@
 """
 Aplicación Streamlit para el Balanceo de Líneas de Producción.
 
-Versión 3.1: Reintegra las alertas automáticas de WhatsApp, manteniendo la 
-interfaz mejorada, exportación a PDF y métricas avanzadas.
+Versión 5.0: Se reestructura la interfaz principal en pestañas.
+La funcionalidad del optimizador se mueve a la pestaña "Optimizador" y
+la información del autor a una nueva pestaña "Acerca de".
 """
 import streamlit as st
 import datetime
@@ -140,55 +141,32 @@ def inicializar_twilio_client():
                 st.session_state.twilio_configured = True
                 return Client(account_sid, auth_token)
     except Exception:
-        pass # Silently fail if secrets are not valid
+        pass
     st.session_state.twilio_configured = False
     return None
 
 def enviar_alerta_whatsapp(mensaje):
     if 'twilio_client' not in st.session_state or not st.session_state.twilio_client:
         return
-
     if not st.session_state.get('twilio_configured'):
-        st.warning("Las credenciales de Twilio no están configuradas en los Secrets. No se pueden enviar alertas.", icon="⚠️")
+        st.warning("Credenciales de Twilio no configuradas.", icon="⚠️")
         return
-        
     try:
         from_number = st.secrets["TWILIO_WHATSAPP_FROM_NUMBER"]
         to_number = st.secrets["DESTINATION_WHATSAPP_NUMBER"]
-        
-        # Prefijo obligatorio para cuentas de prueba (Trial Account)
         codigo_aleatorio = random.randint(100000, 999999)
         mensaje_final = f"Your Twilio code is {codigo_aleatorio}\n\n{mensaje}"
-
         st.session_state.twilio_client.messages.create(
-            from_=f'whatsapp:{from_number}',
-            body=mensaje_final,
-            to=f'whatsapp:{to_number}'
+            from_=f'whatsapp:{from_number}', body=mensaje_final, to=f'whatsapp:{to_number}'
         )
-        st.toast(f"¡Alerta de baja eficiencia enviada a {to_number}!", icon="✅")
-    
+        st.toast(f"¡Alerta enviada a {to_number}!", icon="✅")
     except TwilioRestException as e:
         st.error(f"Error de Twilio: {e.msg}", icon="🚨")
-        if e.code == 21608:
-            st.warning("Error 21608: El número de destino no está verificado. Reactiva tu Sandbox de WhatsApp.", icon="📱")
+        if e.code == 21608: st.warning("Reactiva tu Sandbox de WhatsApp.", icon="📱")
     except Exception as e:
         st.error(f"Error inesperado al enviar WhatsApp: {e}", icon="🚨")
 
 # --- Funciones de Generación (Gráficos, PDF) ---
-def generar_graficos(linea_obj):
-    fig_pie, ax1 = plt.subplots(figsize=(5, 4))
-    ax1.pie([e.tiempo for e in linea_obj.estaciones_lista], labels=[e.nombre for e in linea_obj.estaciones_lista], autopct='%1.1f%%', startangle=90)
-    ax1.axis('equal')
-    ax1.set_title('Distribución de Tiempos')
-    plt.tight_layout()
-    
-    fig_bar, ax2 = plt.subplots(figsize=(5, 4))
-    ax2.bar([a['nombre'] for a in linea_obj.empleados_asignados_por_estacion], [a['empleados'] for a in linea_obj.empleados_asignados_por_estacion], color='skyblue')
-    ax2.set_title('Asignación de Empleados')
-    plt.xticks(rotation=45, ha="right")
-    plt.tight_layout()
-    return fig_pie, fig_bar
-
 def generar_reporte_pdf(linea_obj):
     if not IS_PDF_AVAILABLE: return None
     buffer = BytesIO()
@@ -207,107 +185,128 @@ def generar_reporte_pdf(linea_obj):
     cpm_header = ["Estación", "Tiempo", "ES", "EF", "LS", "LF", "Holgura", "Crítica"]
     cpm_data = [cpm_header] + [[est.nombre, f"{est.tiempo:.2f}", f"{est.es:.2f}", f"{est.ef:.2f}", f"{est.ls:.2f}", f"{est.lf:.2f}", f"{est.holgura:.2f}", "Sí" if est.es_critica else "No"] for est in linea_obj.estaciones_lista]
     story.append(Table(cpm_data, style=[('BACKGROUND', (0,0), (-1,0), colors.grey), ('GRID', (0,0), (-1,-1), 1, colors.black)]))
-    fig_pie, fig_bar = generar_graficos(linea_obj)
+    fig_pie, ax1 = plt.subplots(); ax1.pie([e.tiempo for e in linea_obj.estaciones_lista], labels=[e.nombre for e in linea_obj.estaciones_lista], autopct='%1.1f%%'); ax1.axis('equal'); ax1.set_title('Tiempos')
+    fig_bar, ax2 = plt.subplots(); ax2.bar([a['nombre'] for a in linea_obj.empleados_asignados_por_estacion], [a['empleados'] for a in linea_obj.empleados_asignados_por_estacion]); ax2.set_title('Empleados'); plt.xticks(rotation=45)
     charts = []
     for fig in [fig_pie, fig_bar]:
-        if fig:
-            buf = BytesIO()
-            fig.savefig(buf, format='PNG', dpi=300)
-            buf.seek(0)
-            charts.append(Image(buf, width=3.5*inch, height=2.8*inch))
-    if charts: story.append(Table([charts]))
-    doc.build(story)
-    buffer.seek(0)
+        buf = BytesIO(); fig.savefig(buf, format='PNG'); buf.seek(0)
+        charts.append(Image(buf, width=3.5*inch, height=2.8*inch))
+    story.append(Table([charts])); doc.build(story); buffer.seek(0)
     return buffer.getvalue()
 
 # --- Configuración Inicial y Estado ---
 st.set_page_config(page_title="Optimizador de Líneas", layout="wide", page_icon="🏭")
-
 if 'estaciones' not in st.session_state:
     st.session_state.estaciones = [
         {'nombre': 'Corte', 'tiempo': 2.0, 'predecesora': ''}, {'nombre': 'Doblado', 'tiempo': 3.0, 'predecesora': 'Corte'},
         {'nombre': 'Ensamblaje', 'tiempo': 5.0, 'predecesora': 'Doblado'}, {'nombre': 'Pintura', 'tiempo': 4.0, 'predecesora': 'Ensamblaje'},
         {'nombre': 'Empaque', 'tiempo': 1.5, 'predecesora': 'Pintura'}
     ]
-
 if 'twilio_client' not in st.session_state:
     st.session_state.twilio_client = inicializar_twilio_client()
 
-# --- Interfaz de Usuario Principal ---
+# --- INTERFAZ PRINCIPAL CON PESTAÑAS ---
 st.title("🏭 Optimizador Avanzado de Líneas de Producción")
+tab_optimizador, tab_acerca_de = st.tabs(["🚀 Optimizador", "ℹ️ Acerca de"])
 
-with st.expander("⚙️ Configurar Simulación y Estaciones", expanded=True):
-    col_params, col_actions = st.columns([1, 1])
-    with col_params:
-        unidades = st.number_input("Unidades a Producir", 1, value=100, step=10)
-        empleados = st.number_input("Empleados Disponibles", 1, value=5, step=1)
-    with col_actions:
-        st.subheader("Gestionar Estaciones")
-        c1, c2 = st.columns(2)
-        if c1.button("➕ Añadir Estación", use_container_width=True):
-            st.session_state.estaciones.append({'nombre': '', 'tiempo': 1.0, 'predecesora': ''})
-            st.rerun()
-        if c2.button("➖ Quitar Última", use_container_width=True, disabled=len(st.session_state.estaciones) <= 1):
-            st.session_state.estaciones.pop()
-            st.rerun()
+# --- Pestaña del Optimizador ---
+with tab_optimizador:
+    with st.expander("⚙️ **Haga clic para configurar la simulación y las estaciones**", expanded=True):
+        col_params, col_actions = st.columns([1, 1])
+        with col_params:
+            unidades = st.number_input("Unidades a Producir", 1, value=100, step=10)
+            empleados = st.number_input("Empleados Disponibles", 1, value=5, step=1)
+        with col_actions:
+            st.subheader("Gestionar Estaciones")
+            c1, c2 = st.columns(2)
+            if c1.button("➕ Añadir Estación", use_container_width=True, key="add_station"):
+                st.session_state.estaciones.append({'nombre': '', 'tiempo': 1.0, 'predecesora': ''})
+                st.rerun()
+            if c2.button("➖ Quitar Última", use_container_width=True, disabled=len(st.session_state.estaciones) <= 1, key="remove_station"):
+                st.session_state.estaciones.pop()
+                st.rerun()
 
-    st.subheader("Definición de Estaciones")
-    cols = st.columns(max(1, len(st.session_state.estaciones)))
-    for i, est in enumerate(st.session_state.estaciones):
-        with cols[i % len(cols)]:
-            st.markdown(f"**Estación {i+1}**")
-            st.session_state.estaciones[i]['nombre'] = st.text_input("Nombre", est['nombre'], key=f"nombre_{i}")
-            st.session_state.estaciones[i]['tiempo'] = st.number_input("Tiempo (min)", 0.01, value=est['tiempo'], key=f"tiempo_{i}")
-            opts = [""] + [e['nombre'] for j, e in enumerate(st.session_state.estaciones) if i != j and e['nombre']]
-            st.session_state.estaciones[i]['predecesora'] = st.selectbox("Predecesora", opts, index=(opts.index(est['predecesora']) if est['predecesora'] in opts else 0), key=f"pred_{i}")
+        st.subheader("Definición de Estaciones")
+        cols = st.columns(max(1, len(st.session_state.estaciones)))
+        for i, est in enumerate(st.session_state.estaciones):
+            with cols[i % len(cols)]:
+                st.markdown(f"**Estación {i+1}**")
+                st.session_state.estaciones[i]['nombre'] = st.text_input("Nombre", est['nombre'], key=f"nombre_{i}")
+                st.session_state.estaciones[i]['tiempo'] = st.number_input("Tiempo (min)", 0.01, value=est['tiempo'], key=f"tiempo_{i}")
+                opts = [""] + [e['nombre'] for j, e in enumerate(st.session_state.estaciones) if i != j and e['nombre']]
+                st.session_state.estaciones[i]['predecesora'] = st.selectbox("Predecesora", opts, index=(opts.index(est['predecesora']) if est['predecesora'] in opts else 0), key=f"pred_{i}")
 
-c1, c2, c3 = st.columns([2, 1, 1])
-if c1.button("🚀 Calcular y Optimizar", type="primary", use_container_width=True):
-    try:
-        linea = LineaProduccion(st.session_state.estaciones, unidades, empleados)
-        linea.ejecutar_calculos()
-        st.session_state.results = {"linea_obj": linea}
-        st.success("¡Análisis completado!")
-        if linea.eficiencia_linea < LOW_EFFICIENCY_THRESHOLD:
-            mensaje = f"¡Alerta de Producción! 📉\nEficiencia: *{linea.eficiencia_linea:.1f}%*.\nCuello de botella: '{linea.cuello_botella_info.get('nombre', 'N/A')}'."
-            enviar_alerta_whatsapp(mensaje)
-    except Exception as e:
-        st.error(f"Error en el cálculo: {e}")
+    c1, c2, c3 = st.columns([2, 1, 1])
+    if c1.button("🚀 Calcular y Optimizar", type="primary", use_container_width=True, key="calculate"):
+        try:
+            linea = LineaProduccion(st.session_state.estaciones, unidades, empleados)
+            linea.ejecutar_calculos()
+            st.session_state.results = {"linea_obj": linea}
+            st.success("¡Análisis completado!")
+            if linea.eficiencia_linea < LOW_EFFICIENCY_THRESHOLD:
+                mensaje = f"¡Alerta! Eficiencia baja: {linea.eficiencia_linea:.1f}%. Cuello de botella: '{linea.cuello_botella_info.get('nombre', 'N/A')}'."
+                enviar_alerta_whatsapp(mensaje)
+        except Exception as e:
+            st.error(f"Error en el cálculo: {e}")
+            st.session_state.results = None
+
+    if 'results' in st.session_state and st.session_state.results:
+        if c2.download_button("📄 Descargar PDF", generar_reporte_pdf(st.session_state.results['linea_obj']), "reporte_balanceo.pdf", "application/pdf", use_container_width=True, key="download"):
+            pass
+
+    if c3.button("🔄 Resetear", use_container_width=True, key="reset"):
         st.session_state.results = None
+        st.session_state.estaciones = [
+            {'nombre': 'Corte', 'tiempo': 2.0, 'predecesora': ''}, {'nombre': 'Doblado', 'tiempo': 3.0, 'predecesora': 'Corte'},
+            {'nombre': 'Ensamblaje', 'tiempo': 5.0, 'predecesora': 'Doblado'}, {'nombre': 'Pintura', 'tiempo': 4.0, 'predecesora': 'Ensamblaje'},
+            {'nombre': 'Empaque', 'tiempo': 1.5, 'predecesora': 'Pintura'}
+        ]
+        st.rerun()
 
-if 'results' in st.session_state and st.session_state.results:
-    if c2.download_button("📄 Descargar Reporte PDF", generar_reporte_pdf(st.session_state.results['linea_obj']), "reporte.pdf", "application/pdf", use_container_width=True):
-        pass
+    if 'results' in st.session_state and st.session_state.results:
+        linea_res = st.session_state.results['linea_obj']
+        st.markdown("---")
+        st.header("📊 Resultados de la Optimización")
+        kpi_cols = st.columns(5)
+        kpi_cols[0].metric("Eficiencia", f"{linea_res.eficiencia_linea:.1f}%")
+        kpi_cols[1].metric("Tiempo de Ciclo", f"{linea_res.tiempo_ciclo_calculado:.2f} min/ud")
+        kpi_cols[2].metric("Tasa de Producción", f"{linea_res.tasa_produccion:.1f} uds/hr")
+        kpi_cols[3].metric("Tiempo Total", f"{linea_res.tiempo_produccion_total_estimado:.1f} min")
+        kpi_cols[4].metric("Tiempo Inactivo", f"{linea_res.tiempo_inactivo_total:.1f} min")
 
-if c3.button("🔄 Resetear", use_container_width=True):
-    st.session_state.results = None
-    st.session_state.estaciones = [
-        {'nombre': 'Corte', 'tiempo': 2.0, 'predecesora': ''}, {'nombre': 'Doblado', 'tiempo': 3.0, 'predecesora': 'Corte'},
-        {'nombre': 'Ensamblaje', 'tiempo': 5.0, 'predecesora': 'Doblado'}, {'nombre': 'Pintura', 'tiempo': 4.0, 'predecesora': 'Ensamblaje'},
-        {'nombre': 'Empaque', 'tiempo': 1.5, 'predecesora': 'Pintura'}
-    ]
-    st.rerun()
+        res_tab1, res_tab2, res_tab3 = st.tabs(["📈 **Análisis y Sugerencias**", "📋 **Tabla CPM**", "🧑‍💼 **Asignación de Personal**"])
+        with res_tab1:
+            cb_nombre = linea_res.cuello_botella_info.get('nombre', 'N/A')
+            st.info(f"**Cuello de Botella:** Estación **'{cb_nombre}'** ({linea_res.tiempo_ciclo_calculado:.2f} min).", icon="⚠️")
+            candidatas = sorted([est for est in linea_res.estaciones_lista if not est.es_critica], key=lambda x: x.holgura, reverse=True)
+            if linea_res.eficiencia_linea < 85 and candidatas:
+                st.warning(f"**Sugerencia:** Redistribuir tareas desde '{cb_nombre}' hacia **'{candidatas[0].nombre}'** (holgura de {candidatas[0].holgura:.2f} min).", icon="🛠️")
+        with res_tab2:
+            st.dataframe([{"Estación": est.nombre, "Tiempo": est.tiempo, "ES": est.es, "EF": est.ef, "LS": est.ls, "LF": est.lf, "Holgura": f"{est.holgura:.2f}", "Crítica": "🔴 Sí" if est.es_critica else "🟢 No"} for est in linea_res.estaciones_lista])
+        with res_tab3:
+            st.dataframe(linea_res.empleados_asignados_por_estacion)
 
-if 'results' in st.session_state and st.session_state.results:
-    linea_res = st.session_state.results['linea_obj']
-    st.markdown("---")
-    st.header("📊 Resultados de la Optimización")
-    kpi_cols = st.columns(5)
-    kpi_cols[0].metric("Eficiencia", f"{linea_res.eficiencia_linea:.1f}%")
-    kpi_cols[1].metric("Tiempo de Ciclo", f"{linea_res.tiempo_ciclo_calculado:.2f} min/ud")
-    kpi_cols[2].metric("Tasa de Producción", f"{linea_res.tasa_produccion:.1f} uds/hr")
-    kpi_cols[3].metric("Tiempo Total", f"{linea_res.tiempo_produccion_total_estimado:.1f} min")
-    kpi_cols[4].metric("Tiempo Inactivo", f"{linea_res.tiempo_inactivo_total:.1f} min")
-
-    tab1, tab2, tab3 = st.tabs(["📈 **Análisis y Sugerencias**", "📋 **Tabla CPM**", "🧑‍💼 **Asignación de Personal**"])
-    with tab1:
-        cb_nombre = linea_res.cuello_botella_info.get('nombre', 'N/A')
-        st.info(f"**Cuello de Botella:** Estación **'{cb_nombre}'** ({linea_res.tiempo_ciclo_calculado:.2f} min).", icon="⚠️")
-        candidatas = sorted([est for est in linea_res.estaciones_lista if not est.es_critica], key=lambda x: x.holgura, reverse=True)
-        if linea_res.eficiencia_linea < 85 and candidatas:
-            st.warning(f"**Sugerencia:** Mover tareas desde '{cb_nombre}' hacia **'{candidatas[0].nombre}'** (holgura de {candidatas[0].holgura:.2f} min) para mejorar el balance.", icon="🛠️")
-    with tab2:
-        st.dataframe([{"Estación": est.nombre, "Tiempo": est.tiempo, "ES": est.es, "EF": est.ef, "LS": est.ls, "LF": est.lf, "Holgura": f"{est.holgura:.2f}", "Crítica": "🔴 Sí" if est.es_critica else "🟢 No"} for est in linea_res.estaciones_lista])
-    with tab3:
-        st.dataframe(linea_res.empleados_asignados_por_estacion)
+# --- Pestaña de "Acerca de" ---
+with tab_acerca_de:
+    st.header("Autor del Software")
+    st.write("---")
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        # Placeholder for an image, you can replace the URL with a direct link to a photo
+        st.image("https://placehold.co/200x200/2B3137/FFFFFF?text=J.S.", width=200, caption="Joseph Javier Sánchez Acuña")
+    with col2:
+        st.subheader("Joseph Javier Sánchez Acuña")
+        st.write("**Ingeniero Industrial, Experto en Inteligencia Artificial y Desarrollo de Software.**")
+        st.markdown("""
+        Esta aplicación fue desarrollada como una herramienta avanzada para el análisis y balanceo de líneas de producción.
+        Combina principios de ingeniería industrial con desarrollo de software moderno para proporcionar una solución
+        intuitiva y potente.
+        """)
+    st.write("---")
+    st.subheader("Contacto y Enlaces")
+    st.write(
+        "🔗 [**LinkedIn**](https://www.linkedin.com/in/joseph-javier-sánchez-acuña-150410275) &nbsp;&nbsp; | &nbsp;&nbsp;"
+        "📂 [**GitHub**](https://github.com/GIUSEPPESAN21) &nbsp;&nbsp; | &nbsp;&nbsp;"
+        "📧 **joseph.sanchez@uniminuto.edu.co**"
+    )
 
